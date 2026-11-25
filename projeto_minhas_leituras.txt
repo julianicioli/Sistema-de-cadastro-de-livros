@@ -1,0 +1,908 @@
+﻿PROJETO: Minhas Leituras - gerenciador de livros e mangás (React Native + Supabase)
+Arquivos incluídos: 18
+
+======================================================================
+ARQUIVO: README.md
+======================================================================
+# Minhas Leituras — gerenciador de livros e mangás
+
+App mobile em **React Native (Expo)** integrado ao **Supabase** (PostgreSQL). Permite cadastrar obras
+(livros ou mangás) com quantidade de volumes/capítulos e total de páginas, marcar o progresso de leitura
+e calcular automaticamente o percentual concluído.
+
+## Funcionalidades
+- Cadastrar, editar e excluir obras (título, autor, tipo, volumes, capítulos, páginas)
+- Marcar progresso: páginas lidas, capítulo atual e volume atual (botões +/− ou digitando)
+- Percentual concluído calculado automaticamente:
+  - no app, em tempo real (`src/utils/progresso.js`)
+  - no banco, como coluna gerada `percentual` (`supabase/schema.sql`)
+- Botão "Marcar como concluído"
+- Lista com filtro (Todos / Livros / Mangás), status (Não iniciado / Lendo / Concluído) e média geral
+
+## Como rodar
+1. Crie um projeto em https://supabase.com.
+2. No Supabase, abra **SQL Editor**, cole o conteúdo de `supabase/schema.sql` e clique em **Run**.
+3. Copie `.env.example` para `.env` e preencha a URL do projeto e a chave publishable/anon
+   (Project Settings → Data API e API Keys, ou o botão **Connect**).
+   A URL deve terminar em `.supabase.co`. Se vier com `/rest/v1/`, o app remove automaticamente.
+4. Instale e inicie:
+   ```bash
+   npm install
+   npx expo install --fix   # alinha as versões das libs nativas com o SDK do Expo
+   npx expo start
+   ```
+5. Abra no celular com o app **Expo Go** (lendo o QR code) ou em um emulador Android (`a`).
+
+## Estrutura
+```
+App.js                         navegação (stack)
+src/lib/supabase.js            cliente Supabase
+src/services/obras.js          CRUD da tabela "obras"
+src/utils/progresso.js         cálculo do percentual e status
+src/components/BarraProgresso.js
+src/screens/ListaObrasScreen.js   lista + resumo + filtros
+src/screens/DetalheObraScreen.js  marcar progresso / concluir / excluir
+src/screens/FormObraScreen.js     cadastro e edição
+supabase/schema.sql            tabela, coluna gerada, trigger e RLS
+```
+
+## Regra do percentual
+`percentual = min(100, paginas_lidas / total_paginas × 100)`, arredondado a 1 casa decimal.
+Para obras com capítulos, a tela de detalhe também mostra o percentual por capítulos.
+
+======================================================================
+ARQUIVO: package.json
+======================================================================
+{
+  "name": "leitura-tracker",
+  "version": "1.0.0",
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~4.0.1",
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@react-navigation/native": "^7.0.14",
+    "@react-navigation/native-stack": "^7.2.0",
+    "@supabase/supabase-js": "^2.47.10",
+    "expo": "~52.0.23",
+    "expo-asset": "~11.0.5",
+    "expo-status-bar": "~2.0.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-native": "0.76.9",
+    "react-native-safe-area-context": "4.12.0",
+    "react-native-screens": "~4.4.0",
+    "react-native-url-polyfill": "^2.0.0",
+    "react-native-web": "~0.19.13"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2"
+  },
+  "private": true
+}
+
+======================================================================
+ARQUIVO: app.json
+======================================================================
+{
+  "expo": {
+    "name": "Minhas Leituras",
+    "slug": "minhas-leituras",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#140B2E",
+    "android": {
+      "package": "com.pdm.minhasleituras"
+    },
+    "ios": {
+      "bundleIdentifier": "com.pdm.minhasleituras"
+    },
+    "plugins": [
+      "expo-asset"
+    ]
+  }
+}
+
+======================================================================
+ARQUIVO: babel.config.js
+======================================================================
+module.exports = function (api) {
+  api.cache(true);
+  return { presets: ['babel-preset-expo'] };
+};
+
+======================================================================
+ARQUIVO: .env.example
+======================================================================
+# Copie este arquivo para .env e preencha com os dados do seu projeto Supabase
+# (Supabase > Project Settings > Data API / API Keys, ou botão "Connect")
+# A URL termina em .supabase.co (sem /rest/v1/ no final)
+EXPO_PUBLIC_SUPABASE_URL=https://SEU-PROJETO.supabase.co
+# Use a chave "publishable" (sb_publishable_...) ou a "anon public". NUNCA a service_role/secret.
+EXPO_PUBLIC_SUPABASE_ANON_KEY=sua-chave-publishable-aqui
+
+======================================================================
+ARQUIVO: .gitignore
+======================================================================
+node_modules/
+.expo/
+dist/
+web-build/
+.env
+*.log
+
+======================================================================
+ARQUIVO: App.js
+======================================================================
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { StatusBar } from 'expo-status-bar';
+import ListaObrasScreen from './src/screens/ListaObrasScreen';
+import FormObraScreen from './src/screens/FormObraScreen';
+import DetalheObraScreen from './src/screens/DetalheObraScreen';
+import { cores } from './src/theme';
+
+const Stack = createNativeStackNavigator();
+
+export default function App() {
+  return (
+    <NavigationContainer>
+      <StatusBar style="light" />
+      <Stack.Navigator
+        screenOptions={{
+          headerStyle: { backgroundColor: cores.cabecalho },
+          headerTintColor: cores.texto,
+          headerShadowVisible: false,
+          contentStyle: { backgroundColor: cores.fundo },
+        }}
+      >
+        <Stack.Screen name="Lista" component={ListaObrasScreen} options={{ title: '✦ Minhas Leituras' }} />
+        <Stack.Screen name="Detalhe" component={DetalheObraScreen} options={{ title: 'Progresso' }} />
+        <Stack.Screen name="Form" component={FormObraScreen} options={{ title: 'Nova obra' }} />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}
+
+======================================================================
+ARQUIVO: supabase/schema.sql
+======================================================================
+-- Execute este script no Supabase: SQL Editor > New query > Run
+
+create table if not exists public.obras (
+  id               bigint generated always as identity primary key,
+  titulo           text    not null,
+  autor            text,
+  tipo             text    not null default 'livro' check (tipo in ('livro', 'manga')),
+  total_volumes    integer not null default 0 check (total_volumes >= 0),
+  total_capitulos  integer not null default 0 check (total_capitulos >= 0),
+  total_paginas    integer not null check (total_paginas > 0),
+  volume_atual     integer not null default 0 check (volume_atual >= 0),
+  capitulo_atual   integer not null default 0 check (capitulo_atual >= 0),
+  paginas_lidas    integer not null default 0 check (paginas_lidas >= 0),
+  -- Percentual calculado automaticamente pelo banco a partir das páginas lidas
+  percentual       numeric(5,1) generated always as (
+                     least(100, round(paginas_lidas * 100.0 / total_paginas, 1))
+                   ) stored,
+  criado_em        timestamptz not null default now(),
+  atualizado_em    timestamptz not null default now(),
+  constraint paginas_validas check (paginas_lidas <= total_paginas)
+);
+
+-- Atualiza "atualizado_em" a cada alteração
+create or replace function public.set_atualizado_em()
+returns trigger language plpgsql as $$
+begin
+  new.atualizado_em := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_obras_atualizado on public.obras;
+create trigger trg_obras_atualizado
+before update on public.obras
+for each row execute function public.set_atualizado_em();
+
+-- Row Level Security: liberado para a chave anon (projeto acadêmico, sem login).
+alter table public.obras enable row level security;
+
+drop policy if exists "acesso publico" on public.obras;
+create policy "acesso publico" on public.obras
+  for all to anon, authenticated
+  using (true) with check (true);
+
+======================================================================
+ARQUIVO: src/theme.js
+======================================================================
+// Tema "céu noturno": roxo com estrelinhas
+export const cores = {
+  fundo: '#140B2E',          // roxo bem escuro (céu)
+  cabecalho: '#2A1458',
+  cartao: '#24164A',
+  primaria: '#7C3AED',       // botões
+  destaque: '#C4B5FD',       // lilás para textos de destaque
+  estrela: '#FCD34D',        // dourado (estrelas e obra concluída)
+  sucesso: '#2FA36B',
+  perigo: '#F87171',
+  texto: '#F3EEFF',
+  textoSecundario: '#B9A8E0',
+  borda: '#3B2A6B',
+  trilho: '#3A2766',
+  livro: '#6366F1',
+  manga: '#DB2777',
+};
+
+======================================================================
+ARQUIVO: src/components/BarraProgresso.js
+======================================================================
+import { View, Text, StyleSheet } from 'react-native';
+import { cores } from '../theme';
+
+export default function BarraProgresso({ percentual, altura = 10, mostrarTexto = true }) {
+  const p = Math.max(0, Math.min(100, Number(percentual) || 0));
+  const concluido = p >= 100;
+  return (
+    <View>
+      <View style={[styles.trilho, { height: altura, borderRadius: altura / 2 }]}>
+        <View
+          style={{
+            width: `${p}%`,
+            height: '100%',
+            backgroundColor: concluido ? cores.estrela : cores.primaria,
+            borderRadius: altura / 2,
+          }}
+        />
+      </View>
+      {mostrarTexto && (
+        <Text style={[styles.texto, concluido && { color: cores.estrela }]}>
+          {concluido ? '★ ' : '✦ '}
+          {p.toFixed(1)}% concluído
+        </Text>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  trilho: { backgroundColor: cores.trilho, overflow: 'hidden' },
+  texto: { marginTop: 4, fontSize: 12, color: cores.textoSecundario },
+});
+
+======================================================================
+ARQUIVO: src/components/Fundo.js
+======================================================================
+import { useEffect, useRef } from 'react';
+import { View, Animated, StyleSheet } from 'react-native';
+import { cores } from '../theme';
+
+const SIMBOLOS = ['✦', '✧', '⋆', '★', '·'];
+
+// Posições "aleatórias" fixas (geradas uma vez), para as estrelas não mudarem de lugar
+function gerarEstrelas(qtd) {
+  let seed = 7;
+  const rand = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+  return Array.from({ length: qtd }, (_, i) => ({
+    id: i,
+    simbolo: SIMBOLOS[Math.floor(rand() * SIMBOLOS.length)],
+    top: `${rand() * 100}%`,
+    left: `${rand() * 100}%`,
+    tamanho: 8 + rand() * 14,
+    dourada: rand() < 0.25,
+    duracao: 1500 + rand() * 2500,
+    atraso: rand() * 2000,
+  }));
+}
+
+const ESTRELAS = gerarEstrelas(36);
+
+function Estrela({ e }) {
+  const brilho = useRef(new Animated.Value(0.25)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.delay(e.atraso),
+        Animated.timing(brilho, { toValue: 0.9, duration: e.duracao, useNativeDriver: true }),
+        Animated.timing(brilho, { toValue: 0.25, duration: e.duracao, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, []);
+
+  return (
+    <Animated.Text
+      style={{
+        position: 'absolute',
+        top: e.top,
+        left: e.left,
+        fontSize: e.tamanho,
+        color: e.dourada ? cores.estrela : cores.destaque,
+        opacity: brilho,
+      }}
+    >
+      {e.simbolo}
+    </Animated.Text>
+  );
+}
+
+// Envolve a tela com o céu roxo estrelado
+export default function Fundo({ children }) {
+  return (
+    <View style={styles.fundo}>
+      <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        {ESTRELAS.map((e) => <Estrela key={e.id} e={e} />)}
+      </View>
+      {children}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  fundo: { flex: 1, backgroundColor: cores.fundo, overflow: 'hidden' },
+});
+
+======================================================================
+ARQUIVO: src/lib/supabase.js
+======================================================================
+import 'react-native-url-polyfill/auto';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createClient } from '@supabase/supabase-js';
+
+// Aceita a URL copiada com "/rest/v1/" ou "/" no final (o cliente já adiciona o caminho da API)
+const url = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim().replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim();
+
+if (!url || !anonKey) {
+  console.warn('Configure EXPO_PUBLIC_SUPABASE_URL e EXPO_PUBLIC_SUPABASE_ANON_KEY no arquivo .env');
+}
+
+export const supabase = createClient(url ?? '', anonKey ?? '', {
+  auth: { storage: AsyncStorage, persistSession: true, autoRefreshToken: true },
+});
+
+======================================================================
+ARQUIVO: src/screens/DetalheObraScreen.js
+======================================================================
+import { useCallback, useState } from 'react';
+import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { avisar, confirmar } from '../utils/alerta';
+import { useFocusEffect } from '@react-navigation/native';
+import { buscarObra, atualizarObra, excluirObra } from '../services/obras';
+import BarraProgresso from '../components/BarraProgresso';
+import Fundo from '../components/Fundo';
+import { calcularPercentual, percentualCapitulos, statusLeitura, limitar } from '../utils/progresso';
+import { cores } from '../theme';
+
+export default function DetalheObraScreen({ navigation, route }) {
+  const { id } = route.params;
+  const [obra, setObra] = useState(null);
+  const [prog, setProg] = useState({ paginas_lidas: 0, capitulo_atual: 0, volume_atual: 0 });
+  const [salvando, setSalvando] = useState(false);
+
+  const carregar = useCallback(async () => {
+    try {
+      const o = await buscarObra(id);
+      setObra(o);
+      setProg({ paginas_lidas: o.paginas_lidas, capitulo_atual: o.capitulo_atual, volume_atual: o.volume_atual });
+      navigation.setOptions({ title: o.titulo });
+    } catch (e) {
+      avisar('Erro', e.message);
+    }
+  }, [id]);
+
+  useFocusEffect(useCallback(() => { carregar(); }, [carregar]));
+
+  if (!obra) {
+    return <View style={styles.centro}><ActivityIndicator size="large" color={cores.primaria} /></View>;
+  }
+
+  // Percentual recalculado em tempo real enquanto o usuário altera o progresso
+  const percentual = calcularPercentual(prog.paginas_lidas, obra.total_paginas);
+  const alterado =
+    prog.paginas_lidas !== obra.paginas_lidas ||
+    prog.capitulo_atual !== obra.capitulo_atual ||
+    prog.volume_atual !== obra.volume_atual;
+
+  const maximos = { paginas_lidas: obra.total_paginas, capitulo_atual: obra.total_capitulos, volume_atual: obra.total_volumes };
+  const ajustar = (campo, delta) =>
+    setProg((p) => ({ ...p, [campo]: limitar(p[campo] + delta, maximos[campo]) }));
+  const digitar = (campo) => (txt) => setProg((p) => ({ ...p, [campo]: limitar(txt, maximos[campo]) }));
+
+  async function salvar(novo = prog) {
+    setSalvando(true);
+    try {
+      const o = await atualizarObra(id, novo);
+      setObra(o);
+      setProg({ paginas_lidas: o.paginas_lidas, capitulo_atual: o.capitulo_atual, volume_atual: o.volume_atual });
+    } catch (e) {
+      avisar('Erro ao salvar', e.message);
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  function marcarConcluido() {
+    salvar({ paginas_lidas: obra.total_paginas, capitulo_atual: obra.total_capitulos, volume_atual: obra.total_volumes });
+  }
+
+  function confirmarExclusao() {
+    confirmar('Excluir obra', `Deseja excluir "${obra.titulo}"?`, 'Excluir', async () => {
+      try {
+        await excluirObra(id);
+        navigation.goBack();
+      } catch (e) {
+        avisar('Erro', e.message);
+      }
+    });
+  }
+
+  return (
+    <Fundo>
+    <ScrollView contentContainerStyle={styles.container}>
+      <View style={styles.cartao}>
+        <Text style={styles.tipo}>{obra.tipo === 'manga' ? 'MANGÁ' : 'LIVRO'}</Text>
+        <Text style={styles.titulo}>{obra.titulo}</Text>
+        {!!obra.autor && <Text style={styles.autor}>{obra.autor}</Text>}
+
+        <Text style={[styles.percentual, percentual >= 100 && { color: cores.estrela }]}>
+          {percentual >= 100 ? '★ ' : ''}{percentual.toFixed(1)}%
+        </Text>
+        <Text style={styles.status}>{statusLeitura(percentual)}</Text>
+        <BarraProgresso percentual={percentual} altura={14} mostrarTexto={false} />
+        <Text style={styles.sub}>
+          {prog.paginas_lidas} de {obra.total_paginas} páginas · faltam {obra.total_paginas - prog.paginas_lidas}
+        </Text>
+      </View>
+
+      <View style={styles.cartao}>
+        <Text style={styles.secao}>Marcar progresso</Text>
+        <Contador
+          label="Páginas lidas"
+          valor={prog.paginas_lidas}
+          max={obra.total_paginas}
+          onMenos={() => ajustar('paginas_lidas', -10)}
+          onMais={() => ajustar('paginas_lidas', 10)}
+          passo={10}
+          onDigitar={digitar('paginas_lidas')}
+        />
+        {obra.total_capitulos > 0 && (
+          <Contador
+            label="Capítulo atual"
+            valor={prog.capitulo_atual}
+            max={obra.total_capitulos}
+            onMenos={() => ajustar('capitulo_atual', -1)}
+            onMais={() => ajustar('capitulo_atual', 1)}
+            onDigitar={digitar('capitulo_atual')}
+            extra={`${percentualCapitulos(prog.capitulo_atual, obra.total_capitulos).toFixed(1)}% dos capítulos`}
+          />
+        )}
+        {obra.total_volumes > 0 && (
+          <Contador
+            label="Volume atual"
+            valor={prog.volume_atual}
+            max={obra.total_volumes}
+            onMenos={() => ajustar('volume_atual', -1)}
+            onMais={() => ajustar('volume_atual', 1)}
+            onDigitar={digitar('volume_atual')}
+          />
+        )}
+
+        <TouchableOpacity
+          style={[styles.botao, !alterado && styles.botaoDesativado]}
+          disabled={!alterado || salvando}
+          onPress={() => salvar()}
+        >
+          {salvando ? <ActivityIndicator color="#fff" /> : <Text style={styles.botaoTexto}>Salvar progresso</Text>}
+        </TouchableOpacity>
+        {percentual < 100 && (
+          <TouchableOpacity style={[styles.botao, { backgroundColor: cores.estrela }]} onPress={marcarConcluido}>
+            <Text style={[styles.botaoTexto, { color: cores.fundo }]}>★ Marcar como concluído</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <View style={styles.acoes}>
+        <TouchableOpacity style={styles.acao} onPress={() => navigation.navigate('Form', { id })}>
+          <Text style={{ color: cores.destaque, fontWeight: '600' }}>Editar dados</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.acao} onPress={confirmarExclusao}>
+          <Text style={{ color: cores.perigo, fontWeight: '600' }}>Excluir</Text>
+        </TouchableOpacity>
+      </View>
+    </ScrollView>
+    </Fundo>
+  );
+}
+
+function Contador({ label, valor, max, onMenos, onMais, onDigitar, passo = 1, extra }) {
+  return (
+    <View style={styles.contador}>
+      <Text style={styles.label}>{label} <Text style={styles.max}>(de {max})</Text></Text>
+      <View style={styles.contadorLinha}>
+        <TouchableOpacity style={styles.passo} onPress={onMenos}><Text style={styles.passoTexto}>−{passo > 1 ? passo : ''}</Text></TouchableOpacity>
+        <TextInput style={styles.input} keyboardType="number-pad" value={String(valor)} onChangeText={onDigitar} />
+        <TouchableOpacity style={styles.passo} onPress={onMais}><Text style={styles.passoTexto}>+{passo > 1 ? passo : ''}</Text></TouchableOpacity>
+      </View>
+      {!!extra && <Text style={styles.max}>{extra}</Text>}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { padding: 16 },
+  centro: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: cores.fundo },
+  cartao: { backgroundColor: cores.cartao, borderRadius: 12, padding: 16, marginBottom: 14, borderWidth: 1, borderColor: cores.borda },
+  tipo: { fontSize: 11, fontWeight: '700', color: cores.textoSecundario, letterSpacing: 1 },
+  titulo: { fontSize: 22, fontWeight: '800', color: cores.texto, marginTop: 2 },
+  autor: { color: cores.textoSecundario, marginBottom: 8 },
+  percentual: { fontSize: 44, fontWeight: '800', color: cores.destaque, textAlign: 'center', marginTop: 8 },
+  status: { textAlign: 'center', color: cores.textoSecundario, marginBottom: 10 },
+  sub: { textAlign: 'center', color: cores.textoSecundario, marginTop: 8, fontSize: 13 },
+  secao: { fontSize: 16, fontWeight: '700', color: cores.texto, marginBottom: 10 },
+  contador: { marginBottom: 14 },
+  label: { fontWeight: '600', color: cores.texto, marginBottom: 6 },
+  max: { color: cores.textoSecundario, fontWeight: '400', fontSize: 12 },
+  contadorLinha: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  passo: { width: 52, height: 44, borderRadius: 10, backgroundColor: cores.trilho, alignItems: 'center', justifyContent: 'center' },
+  passoTexto: { fontSize: 16, fontWeight: '700', color: cores.destaque },
+  input: { flex: 1, height: 44, borderWidth: 1, borderColor: cores.borda, borderRadius: 10, textAlign: 'center', fontSize: 18, color: cores.texto },
+  botao: { backgroundColor: cores.primaria, borderRadius: 10, paddingVertical: 13, alignItems: 'center', marginTop: 8 },
+  botaoDesativado: { opacity: 0.4 },
+  botaoTexto: { color: '#fff', fontWeight: '700' },
+  acoes: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 24 },
+  acao: { padding: 12 },
+});
+
+======================================================================
+ARQUIVO: src/screens/FormObraScreen.js
+======================================================================
+import { useEffect, useState } from 'react';
+import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { avisar } from '../utils/alerta';
+import Fundo from '../components/Fundo';
+import { buscarObra, criarObra, atualizarObra } from '../services/obras';
+import { cores } from '../theme';
+
+const vazio = { titulo: '', autor: '', tipo: 'livro', total_volumes: '', total_capitulos: '', total_paginas: '' };
+
+export default function FormObraScreen({ navigation, route }) {
+  const id = route.params?.id;
+  const [form, setForm] = useState(vazio);
+  const [salvando, setSalvando] = useState(false);
+  const [carregando, setCarregando] = useState(!!id);
+
+  useEffect(() => {
+    navigation.setOptions({ title: id ? 'Editar obra' : 'Nova obra' });
+    if (!id) return;
+    buscarObra(id)
+      .then((o) =>
+        setForm({
+          titulo: o.titulo,
+          autor: o.autor ?? '',
+          tipo: o.tipo,
+          total_volumes: String(o.total_volumes),
+          total_capitulos: String(o.total_capitulos),
+          total_paginas: String(o.total_paginas),
+          paginas_lidas: o.paginas_lidas,
+        })
+      )
+      .catch((e) => avisar('Erro', e.message))
+      .finally(() => setCarregando(false));
+  }, [id]);
+
+  const set = (campo) => (valor) => setForm((f) => ({ ...f, [campo]: valor }));
+  const num = (v) => parseInt(v, 10) || 0;
+
+  async function salvar() {
+    const totalPaginas = num(form.total_paginas);
+    if (!form.titulo.trim()) return avisar('Atenção', 'Informe o título.');
+    if (totalPaginas <= 0) return avisar('Atenção', 'O total de páginas deve ser maior que zero.');
+    if (id && form.paginas_lidas > totalPaginas) {
+      return avisar('Atenção', `Você já leu ${form.paginas_lidas} páginas; o total não pode ser menor.`);
+    }
+
+    const dados = {
+      titulo: form.titulo.trim(),
+      autor: form.autor.trim() || null,
+      tipo: form.tipo,
+      total_volumes: num(form.total_volumes),
+      total_capitulos: num(form.total_capitulos),
+      total_paginas: totalPaginas,
+    };
+
+    setSalvando(true);
+    try {
+      if (id) await atualizarObra(id, dados);
+      else await criarObra(dados);
+      navigation.goBack();
+    } catch (e) {
+      avisar('Erro ao salvar', e.message);
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  if (carregando) {
+    return <View style={styles.centro}><ActivityIndicator size="large" color={cores.primaria} /></View>;
+  }
+
+  return (
+    <Fundo>
+    <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+      <Text style={styles.label}>Tipo</Text>
+      <View style={styles.tipos}>
+        {[['livro', 'Livro'], ['manga', 'Mangá']].map(([valor, rotulo]) => (
+          <TouchableOpacity
+            key={valor}
+            style={[styles.tipo, form.tipo === valor && styles.tipoAtivo]}
+            onPress={() => set('tipo')(valor)}
+          >
+            <Text style={[styles.tipoTexto, form.tipo === valor && { color: '#fff' }]}>{rotulo}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <Campo label="Título *" value={form.titulo} onChangeText={set('titulo')} placeholder="Ex.: One Piece" />
+      <Campo label="Autor" value={form.autor} onChangeText={set('autor')} placeholder="Ex.: Eiichiro Oda" />
+      <View style={styles.linha}>
+        <Campo flex label="Volumes" value={form.total_volumes} onChangeText={set('total_volumes')} numerico />
+        <Campo flex label="Capítulos" value={form.total_capitulos} onChangeText={set('total_capitulos')} numerico />
+      </View>
+      <Campo label="Total de páginas *" value={form.total_paginas} onChangeText={set('total_paginas')} numerico />
+
+      <TouchableOpacity style={styles.botao} onPress={salvar} disabled={salvando}>
+        {salvando ? <ActivityIndicator color="#fff" /> : <Text style={styles.botaoTexto}>Salvar</Text>}
+      </TouchableOpacity>
+    </ScrollView>
+    </Fundo>
+  );
+}
+
+function Campo({ label, numerico, flex, ...props }) {
+  return (
+    <View style={[{ marginBottom: 14 }, flex && { flex: 1 }]}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        keyboardType={numerico ? 'number-pad' : 'default'}
+        placeholderTextColor={cores.textoSecundario}
+        {...props}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { padding: 16 },
+  centro: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: cores.fundo },
+  label: { fontSize: 13, fontWeight: '600', color: cores.texto, marginBottom: 6 },
+  input: { backgroundColor: cores.cartao, borderWidth: 1, borderColor: cores.borda, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, color: cores.texto },
+  linha: { flexDirection: 'row', gap: 12 },
+  tipos: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  tipo: { flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: cores.primaria, alignItems: 'center', backgroundColor: cores.cartao },
+  tipoAtivo: { backgroundColor: cores.primaria },
+  tipoTexto: { color: cores.destaque, fontWeight: '600' },
+  botao: { backgroundColor: cores.primaria, borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 8 },
+  botaoTexto: { color: '#fff', fontWeight: '700', fontSize: 16 },
+});
+
+======================================================================
+ARQUIVO: src/screens/ListaObrasScreen.js
+======================================================================
+import { useCallback, useMemo, useState } from 'react';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, RefreshControl, ActivityIndicator } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { listarObras } from '../services/obras';
+import BarraProgresso from '../components/BarraProgresso';
+import Fundo from '../components/Fundo';
+import { statusLeitura } from '../utils/progresso';
+import { cores } from '../theme';
+
+const FILTROS = [
+  { chave: 'todos', rotulo: 'Todos' },
+  { chave: 'livro', rotulo: 'Livros' },
+  { chave: 'manga', rotulo: 'Mangás' },
+];
+
+export default function ListaObrasScreen({ navigation }) {
+  const [obras, setObras] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState(null);
+  const [filtro, setFiltro] = useState('todos');
+
+  const carregar = useCallback(async () => {
+    try {
+      setErro(null);
+      setObras(await listarObras());
+    } catch (e) {
+      setErro(e.message);
+    } finally {
+      setCarregando(false);
+    }
+  }, []);
+
+  // Recarrega sempre que a tela volta a ficar em foco
+  useFocusEffect(useCallback(() => { carregar(); }, [carregar]));
+
+  const visiveis = useMemo(
+    () => (filtro === 'todos' ? obras : obras.filter((o) => o.tipo === filtro)),
+    [obras, filtro]
+  );
+
+  const mediaGeral = obras.length
+    ? obras.reduce((s, o) => s + Number(o.percentual), 0) / obras.length
+    : 0;
+  const concluidas = obras.filter((o) => Number(o.percentual) >= 100).length;
+
+  if (carregando) {
+    return <View style={styles.centro}><ActivityIndicator size="large" color={cores.primaria} /></View>;
+  }
+
+  return (
+    <Fundo>
+      <View style={styles.resumo}>
+        <Text style={styles.resumoTitulo}>
+          {obras.length} obra(s) · {concluidas} concluída(s)
+        </Text>
+        <BarraProgresso percentual={mediaGeral} />
+      </View>
+
+      <View style={styles.filtros}>
+        {FILTROS.map((f) => (
+          <TouchableOpacity
+            key={f.chave}
+            style={[styles.chip, filtro === f.chave && styles.chipAtivo]}
+            onPress={() => setFiltro(f.chave)}
+          >
+            <Text style={[styles.chipTexto, filtro === f.chave && styles.chipTextoAtivo]}>{f.rotulo}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {erro && <Text style={styles.erro}>Erro: {erro}</Text>}
+
+      <FlatList
+        data={visiveis}
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={{ padding: 16, paddingBottom: 96 }}
+        refreshControl={<RefreshControl refreshing={false} onRefresh={carregar} />}
+        ListEmptyComponent={
+          <Text style={styles.vazio}>✧ Nenhuma obra cadastrada ainda ✧{'\n'}Toque em “+” para adicionar.</Text>
+        }
+        renderItem={({ item }) => (
+          <TouchableOpacity style={styles.cartao} onPress={() => navigation.navigate('Detalhe', { id: item.id })}>
+            <View style={styles.linha}>
+              <Text style={styles.titulo} numberOfLines={1}>{item.titulo}</Text>
+              <Text style={[styles.tag, { backgroundColor: item.tipo === 'manga' ? cores.manga : cores.livro }]}>
+                {item.tipo === 'manga' ? 'Mangá' : 'Livro'}
+              </Text>
+            </View>
+            {!!item.autor && <Text style={styles.autor}>{item.autor}</Text>}
+            <Text style={styles.info}>
+              Pág. {item.paginas_lidas}/{item.total_paginas}
+              {item.total_capitulos > 0 ? ` · Cap. ${item.capitulo_atual}/${item.total_capitulos}` : ''}
+              {item.total_volumes > 0 ? ` · Vol. ${item.volume_atual}/${item.total_volumes}` : ''}
+              {`  ·  ${statusLeitura(Number(item.percentual))}`}
+            </Text>
+            <BarraProgresso percentual={item.percentual} altura={8} />
+          </TouchableOpacity>
+        )}
+      />
+
+      <TouchableOpacity style={styles.fab} onPress={() => navigation.navigate('Form')}>
+        <Text style={styles.fabTexto}>+</Text>
+      </TouchableOpacity>
+    </Fundo>
+  );
+}
+
+const styles = StyleSheet.create({
+  centro: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: cores.fundo },
+  resumo: { backgroundColor: cores.cabecalho, padding: 16, borderBottomWidth: 1, borderColor: cores.borda },
+  resumoTitulo: { fontSize: 14, color: cores.texto, marginBottom: 8, fontWeight: '600' },
+  filtros: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 12 },
+  chip: { paddingVertical: 6, paddingHorizontal: 14, borderRadius: 16, borderWidth: 1, borderColor: cores.borda, backgroundColor: cores.cartao },
+  chipAtivo: { backgroundColor: cores.primaria, borderColor: cores.primaria },
+  chipTexto: { color: cores.texto },
+  chipTextoAtivo: { color: '#fff', fontWeight: '600' },
+  erro: { color: cores.perigo, paddingHorizontal: 16, paddingTop: 8 },
+  vazio: { textAlign: 'center', color: cores.textoSecundario, marginTop: 40 },
+  cartao: { backgroundColor: cores.cartao, borderRadius: 12, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: cores.borda },
+  linha: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  titulo: { flex: 1, fontSize: 16, fontWeight: '700', color: cores.texto },
+  tag: { color: '#fff', fontSize: 11, fontWeight: '700', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, overflow: 'hidden' },
+  autor: { color: cores.textoSecundario, marginTop: 2 },
+  info: { color: cores.textoSecundario, fontSize: 12, marginVertical: 8 },
+  fab: { position: 'absolute', right: 20, bottom: 28, width: 58, height: 58, borderRadius: 29, backgroundColor: cores.primaria, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: cores.primaria, shadowOpacity: 0.6, shadowRadius: 10, shadowOffset: { width: 0, height: 0 } },
+  fabTexto: { color: '#fff', fontSize: 30, lineHeight: 32 },
+});
+
+======================================================================
+ARQUIVO: src/services/obras.js
+======================================================================
+import { supabase } from '../lib/supabase';
+
+const TABELA = 'obras';
+
+function check({ data, error }) {
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+export async function listarObras() {
+  return check(await supabase.from(TABELA).select('*').order('atualizado_em', { ascending: false }));
+}
+
+export async function buscarObra(id) {
+  return check(await supabase.from(TABELA).select('*').eq('id', id).single());
+}
+
+export async function criarObra(obra) {
+  return check(await supabase.from(TABELA).insert(obra).select().single());
+}
+
+export async function atualizarObra(id, campos) {
+  return check(await supabase.from(TABELA).update(campos).eq('id', id).select().single());
+}
+
+export async function excluirObra(id) {
+  return check(await supabase.from(TABELA).delete().eq('id', id));
+}
+
+======================================================================
+ARQUIVO: src/utils/alerta.js
+======================================================================
+import { Alert, Platform } from 'react-native';
+
+// Alert.alert não funciona no navegador; na web usamos window.alert / window.confirm.
+export function avisar(titulo, mensagem) {
+  if (Platform.OS === 'web') window.alert(mensagem ? `${titulo}\n\n${mensagem}` : titulo);
+  else Alert.alert(titulo, mensagem);
+}
+
+export function confirmar(titulo, mensagem, textoConfirmar, aoConfirmar) {
+  if (Platform.OS === 'web') {
+    if (window.confirm(`${titulo}\n\n${mensagem}`)) aoConfirmar();
+    return;
+  }
+  Alert.alert(titulo, mensagem, [
+    { text: 'Cancelar', style: 'cancel' },
+    { text: textoConfirmar, style: 'destructive', onPress: aoConfirmar },
+  ]);
+}
+
+======================================================================
+ARQUIVO: src/utils/progresso.js
+======================================================================
+// Cálculo do percentual concluído (mesma regra usada na coluna gerada do banco).
+export function calcularPercentual(paginasLidas, totalPaginas) {
+  const lidas = Number(paginasLidas) || 0;
+  const total = Number(totalPaginas) || 0;
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((lidas * 1000) / total) / 10);
+}
+
+export function percentualCapitulos(capituloAtual, totalCapitulos) {
+  return calcularPercentual(capituloAtual, totalCapitulos);
+}
+
+export function statusLeitura(percentual) {
+  if (percentual >= 100) return 'Concluído';
+  if (percentual > 0) return 'Lendo';
+  return 'Não iniciado';
+}
+
+// Limita um valor entre 0 e o máximo informado
+export function limitar(valor, max) {
+  const n = parseInt(valor, 10);
+  if (Number.isNaN(n) || n < 0) return 0;
+  return max > 0 ? Math.min(n, max) : n;
+}
+
